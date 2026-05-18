@@ -32,10 +32,12 @@ def _to_messages(chat_messages) -> list[Message]:
     messages = []
     for m in chat_messages:
         role = Role(m.role) if m.role in {r.value for r in Role} else Role.USER
+        # Pass list content (multimodal) through unchanged; coerce None to ""
+        content = m.content if isinstance(m.content, list) else (m.content or "")
         messages.append(
             Message(
                 role=role,
-                content=m.content or "",
+                content=content,
                 name=m.name,
                 tool_call_id=m.tool_call_id,
             )
@@ -62,11 +64,17 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
         try:
             from openjarvis.tools.storage.context import ContextConfig, inject_context
 
-            # Extract query from the last user message
+            # Extract text from last user message (content may be a list for multimodal)
             query_text = ""
             for m in reversed(request_body.messages):
                 if m.role == "user" and m.content:
-                    query_text = m.content
+                    if isinstance(m.content, list):
+                        query_text = " ".join(
+                            b.get("text", "") for b in m.content
+                            if isinstance(b, dict) and b.get("type") == "text"
+                        )
+                    else:
+                        query_text = m.content
                     break
 
             if query_text:
@@ -103,12 +111,42 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                 exc_info=True,
             )
 
+    # Inject personality memories from remember tool (memories.json)
+    try:
+        import json as _json
+        from pathlib import Path as _Path
+        _mem_file = _Path.home() / ".openjarvis" / "memories.json"
+        if _mem_file.exists() and request_body.messages:
+            _mems = _json.loads(_mem_file.read_text(encoding="utf-8"))
+            if _mems:
+                from openjarvis.server.models import ChatMessage
+                _lines = "\n".join(
+                    f"• {m['fact']}" for m in _mems[-30:]
+                )
+                _sys_content = (
+                    "[Personal context Jarvis has been asked to remember]\n" + _lines
+                )
+                request_body.messages = [
+                    ChatMessage(role="system", content=_sys_content),
+                    *request_body.messages,
+                ]
+    except Exception:
+        logging.getLogger("openjarvis.server").debug(
+            "Personality memory injection failed", exc_info=True
+        )
+
     # Run complexity analysis on the last user message
     complexity_info = None
     query_text_for_complexity = ""
     for m in reversed(request_body.messages):
         if m.role == "user" and m.content:
-            query_text_for_complexity = m.content
+            if isinstance(m.content, list):
+                query_text_for_complexity = " ".join(
+                    b.get("text", "") for b in m.content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            else:
+                query_text_for_complexity = m.content
             break
     if query_text_for_complexity:
         try:
@@ -139,11 +177,10 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
 
     if request_body.stream:
         bus = getattr(request.app.state, "bus", None)
-        # Use the agent stream bridge only when tools are present (the
-        # bridge runs agent.run() synchronously and word-splits the result,
-        # so it can't stream tokens in real-time).  For plain chat, stream
-        # directly from the engine for true token-by-token output.
-        if agent is not None and bus is not None and request_body.tools:
+        # Always route through the agent when one is configured so that the
+        # system prompt, tools (web search, etc.), and Jarvis persona are
+        # applied to every request — even plain streaming chat.
+        if agent is not None and bus is not None:
             return await _handle_agent_stream(agent, bus, model, request_body)
         return await _handle_stream(engine, model, request_body, complexity_info)
 
@@ -248,10 +285,15 @@ def _handle_agent(
     # Last message is the input
     input_text = req.messages[-1].content if req.messages else ""
 
-    # Override agent model for this request if the caller specified one
+    # Override agent model only when the requested model is a cloud model.
+    # If the UI sends a local Ollama model name (e.g. "qwen3:8b") but the
+    # agent is configured with a cloud model, keep the configured model so
+    # the request doesn't get mis-routed to an unavailable OpenAI backend.
     original_model = agent._model
     if model:
-        agent._model = model
+        from openjarvis.server.cloud_router import is_cloud_model
+        if is_cloud_model(model) or not is_cloud_model(original_model or ""):
+            agent._model = model
     try:
         result = agent.run(input_text, context=ctx)
     finally:
@@ -443,24 +485,30 @@ async def _handle_stream(
 
 @router.get("/v1/models")
 async def list_models(request: Request) -> ModelListResponse:
-    """List locally installed models (Ollama).
+    """List available models — local (Ollama) plus cloud when keys are set."""
+    import os
 
-    Cloud models are not included here — they live in the Cloud Models tab
-    of the UI and are selected there, not from this endpoint.
-    """
     from openjarvis.server.cloud_router import is_cloud_model, list_local_models
 
-    # Prefer engine.list_models() so mock engines work in tests.
-    # Filter out any cloud model IDs that may appear via MultiEngine.
-    # Fall back to direct Ollama query only when the engine returns nothing.
     engine = request.app.state.engine
     all_ids = engine.list_models()
     model_ids = [m for m in all_ids if not is_cloud_model(m)]
     if not model_ids:
         model_ids = await list_local_models()
 
+    # Prepend configured cloud models so the UI can select them directly.
+    cloud_ids: list[str] = []
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        config = getattr(request.app.state, "config", None)
+        default = getattr(getattr(config, "intelligence", None), "default_model", "")
+        if default and is_cloud_model(default):
+            cloud_ids.append(default)
+        # Always include the current Sonnet as a fallback option
+        if "claude-sonnet-4-20250514" not in cloud_ids:
+            cloud_ids.append("claude-sonnet-4-20250514")
+
     return ModelListResponse(
-        data=[ModelObject(id=mid) for mid in model_ids],
+        data=[ModelObject(id=mid) for mid in cloud_ids + model_ids],
     )
 
 

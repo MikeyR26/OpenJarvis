@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { Send, Square, Paperclip } from 'lucide-react';
 import { useAppStore, generateId } from '../../lib/store';
 import { streamChat } from '../../lib/sse';
-import { fetchSavings, getBase } from '../../lib/api';
+import { fetchSavings, getBase, synthesizeSpeech } from '../../lib/api';
 import { MicButton } from './MicButton';
 import { useSpeech } from '../../hooks/useSpeech';
 import type { ChatMessage, ToolCallInfo, TokenUsage, MessageTelemetry } from '../../types';
@@ -18,6 +18,7 @@ export function InputArea() {
   const streamState = useAppStore((s) => s.streamState);
   const messages = useAppStore((s) => s.messages);
   const speechEnabled = useAppStore((s) => s.settings.speechEnabled);
+  const ttsEnabled = useAppStore((s) => s.settings.ttsEnabled);
   const maxTokens = useAppStore((s) => s.settings.maxTokens);
   const temperature = useAppStore((s) => s.settings.temperature);
   const createConversation = useAppStore((s) => s.createConversation);
@@ -52,13 +53,13 @@ export function InputArea() {
     : streamState.isStreaming ? 'streaming'
     : undefined;
 
+  const sendMessageRef = useRef<((contentOverride?: string) => Promise<void>) | null>(null);
+
   const handleMicClick = useCallback(async () => {
     if (speechState === 'recording') {
       try {
         const text = await stopRecording();
-        if (text) {
-          setInput((prev) => (prev ? prev + ' ' + text : text));
-        }
+        if (text) sendMessageRef.current?.(text);
       } catch {
         // Error is captured in useSpeech
       }
@@ -83,8 +84,8 @@ export function InputArea() {
     resetStream();
   }, [resetStream]);
 
-  const sendMessage = useCallback(async () => {
-    const content = input.trim();
+  const sendMessage = useCallback(async (contentOverride?: string) => {
+    const content = (contentOverride !== undefined ? contentOverride : input).trim();
     if (!content || streamState.isStreaming) return;
 
     setInput('');
@@ -128,6 +129,7 @@ export function InputArea() {
     abortRef.current = controller;
 
     let accumulatedContent = '';
+    let wasAborted = false;
     let usage: TokenUsage | undefined;
     let complexity: { score: number; tier: string; suggested_max_tokens: number } | undefined;
     const toolCalls: ToolCallInfo[] = [];
@@ -227,6 +229,7 @@ export function InputArea() {
       }
     } catch (err: any) {
       if (err.name === 'AbortError') {
+        wasAborted = true;
         // User cancelled or model switch — keep whatever was accumulated
         if (!accumulatedContent) accumulatedContent = '(Generation stopped)';
       } else {
@@ -290,6 +293,27 @@ export function InputArea() {
       });
       abortRef.current = null;
 
+      // Auto-play TTS response when voice mode is active
+      if (ttsEnabled && !wasAborted && accumulatedContent && accumulatedContent !== 'No response was generated. Please try again.') {
+        synthesizeSpeech(accumulatedContent)
+          .then((blob) => {
+            const url = URL.createObjectURL(blob);
+            const audio = new Audio(url);
+            audio.onended = () => URL.revokeObjectURL(url);
+            audio.play().catch(() => {});
+          })
+          .catch(() => {
+            // Fall back to browser speech synthesis (free, built-in)
+            if ('speechSynthesis' in window) {
+              window.speechSynthesis.cancel();
+              const utterance = new SpeechSynthesisUtterance(accumulatedContent);
+              utterance.rate = 0.9;
+              utterance.pitch = 0.85;
+              window.speechSynthesis.speak(utterance);
+            }
+          });
+      }
+
       fetchSavings()
         .then((data) => useAppStore.getState().setSavings(data))
         .catch(() => {});
@@ -299,12 +323,15 @@ export function InputArea() {
     activeId,
     selectedModel,
     streamState.isStreaming,
+    ttsEnabled,
     createConversation,
     addMessage,
     updateLastAssistant,
     setStreamState,
     resetStream,
   ]);
+
+  sendMessageRef.current = sendMessage;
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -352,7 +379,7 @@ export function InputArea() {
               reason={micReason}
             />
             <button
-              onClick={sendMessage}
+              onClick={() => sendMessage()}
               disabled={!input.trim() || modelLoading}
               className="p-2 rounded-xl transition-colors shrink-0 cursor-pointer disabled:opacity-30 disabled:cursor-default"
               style={{

@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 class ChatMessage(BaseModel):
     role: str
-    content: str = ""
+    content: Any = ""  # str or list of content blocks (multimodal)
     name: Optional[str] = None
     tool_calls: Optional[List[Dict[str, Any]]] = None
     tool_call_id: Optional[str] = None

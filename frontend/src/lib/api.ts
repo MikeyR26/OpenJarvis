@@ -272,6 +272,19 @@ export async function transcribeAudio(audioBlob: Blob, filename = 'recording.web
   return res.json();
 }
 
+// Transcribe with an initial_prompt biasing Whisper toward wake word vocabulary
+export async function transcribeWakeWord(audioBlob: Blob): Promise<TranscriptionResult> {
+  const formData = new FormData();
+  formData.append('file', audioBlob, 'wake.webm');
+  formData.append('initial_prompt', 'Jarvis, Hey Jarvis');
+  const res = await fetch(`${getBase()}/v1/speech/transcribe`, {
+    method: 'POST',
+    body: formData,
+  });
+  if (!res.ok) throw new Error(`Wake transcription failed: ${res.status}`);
+  return res.json();
+}
+
 export async function fetchSpeechHealth(): Promise<SpeechHealth> {
   if (isTauri()) {
     try {
@@ -283,6 +296,20 @@ export async function fetchSpeechHealth(): Promise<SpeechHealth> {
   const res = await fetch(`${getBase()}/v1/speech/health`);
   if (!res.ok) return { available: false };
   return res.json();
+}
+
+export async function synthesizeSpeech(
+  text: string,
+  voiceId?: string,
+  format = 'mp3',
+): Promise<Blob> {
+  const res = await fetch(`${getBase()}/v1/speech/tts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, voice_id: voiceId, format }),
+  });
+  if (!res.ok) throw new Error(`TTS failed: ${res.status}`);
+  return res.blob();
 }
 
 // ---------------------------------------------------------------------------
@@ -916,4 +943,69 @@ export async function getMemoryConfig(): Promise<MemoryConfig> {
   const res = await fetch(`${getBase()}/v1/memory/config`);
   if (!res.ok) throw new Error('Failed to fetch memory config');
   return res.json();
+}
+
+// ---------------------------------------------------------------------------
+// Jarvis system stats + weather
+// ---------------------------------------------------------------------------
+
+export interface SystemStats {
+  cpu_percent?: number;
+  ram_percent?: number;
+  ram_used_gb?: number;
+  ram_total_gb?: number;
+  disk_percent?: number;
+  gpu_percent?: number;
+  gpu_vram_used_mb?: number;
+  gpu_vram_total_mb?: number;
+  error?: string;
+}
+
+export interface WeatherData {
+  city?: string;
+  country?: string;
+  temp_c?: number;
+  feels_c?: number;
+  description?: string;
+  humidity?: string;
+  error?: string;
+}
+
+export interface ReminderEntry {
+  id: string;
+  message: string;
+  label: string;
+  due_at: string;
+  created_at: string;
+}
+
+export async function fetchSystemStats(): Promise<SystemStats> {
+  try {
+    const res = await fetch(`${getBase()}/api/system-stats`);
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
+}
+
+export async function fetchWeather(): Promise<WeatherData> {
+  try {
+    const res = await fetch(`${getBase()}/api/weather`);
+    if (!res.ok) return {};
+    return res.json();
+  } catch {
+    return {};
+  }
+}
+
+export async function fetchDueReminders(): Promise<ReminderEntry[]> {
+  try {
+    const res = await fetch(`${getBase()}/api/reminders/due`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return data.reminders || [];
+  } catch {
+    return [];
+  }
 }

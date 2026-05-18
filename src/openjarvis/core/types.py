@@ -63,7 +63,7 @@ class Message:
     """A single chat message (OpenAI-compatible structure)."""
 
     role: Role
-    content: str = ""
+    content: Any = ""  # str for text, list for multimodal (image + text blocks)
     name: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
     tool_call_id: Optional[str] = None

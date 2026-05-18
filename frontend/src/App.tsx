@@ -1,5 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { Routes, Route } from 'react-router';
+import { Routes, Route, useLocation } from 'react-router';
 import { Layout } from './components/Layout';
 import { ChatPage } from './pages/ChatPage';
 import { DashboardPage } from './pages/DashboardPage';
@@ -14,6 +14,11 @@ import { Toaster } from './components/ui/sonner';
 import { useAppStore } from './lib/store';
 import { fetchModels, fetchServerInfo, fetchSavings, submitSavings, isTauri } from './lib/api';
 import { OptInModal } from './components/OptInModal';
+import { MissionControlPage } from './pages/MissionControlPage';
+import { JarvisPage, JarvisOrb, TimerWidget } from './pages/JarvisPage';
+import { MapPage } from './pages/MapPage';
+import { TransitionProvider } from './contexts/TransitionContext';
+import { JarvisProvider, useJarvis } from './contexts/JarvisContext';
 
 export default function App() {
   const [setupDone, setSetupDone] = useState(!isTauri());
@@ -168,10 +173,179 @@ export default function App() {
   }
 
   return (
+    <TransitionProvider>
+      <JarvisProvider>
+        <AppInner
+          commandPaletteOpen={commandPaletteOpen}
+          setCommandPaletteOpen={setCommandPaletteOpen}
+          optInModalOpen={optInModalOpen}
+          setOptInModalOpen={setOptInModalOpen}
+        />
+      </JarvisProvider>
+    </TransitionProvider>
+  );
+}
+
+// ── Floating mini-orb that persists on non-home routes ────────────────────────
+
+// Smart default positions per route — chosen to avoid page chrome
+const ROUTE_POSITIONS: Record<string, () => { x: number; y: number }> = {
+  '/map':             () => ({ x: 24, y: window.innerHeight - 130 }),           // bottom-left (map controls are bottom-right)
+  '/mission-control': () => ({ x: window.innerWidth - 210, y: window.innerHeight - 130 }), // bottom-right (away from nav)
+  default:            () => ({ x: window.innerWidth - 210, y: window.innerHeight - 130 }), // bottom-right for sidebar pages
+};
+
+function getDefaultPos(pathname: string) {
+  const fn = ROUTE_POSITIONS[pathname] ?? ROUTE_POSITIONS['default'];
+  return fn();
+}
+
+function FloatingOrb() {
+  const { orbState, timers, speechState, handleMicClick, dismissTimer, stopStreaming } = useJarvis();
+  const streamState = useAppStore((s) => s.streamState);
+  const speechEnabled = useAppStore((s) => s.settings.speechEnabled);
+  const location = useLocation();
+  const micDisabled = !speechEnabled || streamState.isStreaming;
+
+  // Position — top/left in px
+  const [pos, setPos] = useState(() => getDefaultPos(location.pathname));
+  // Per-route user overrides so Jarvis picks the right spot per page
+  const userPosRef = useRef<Record<string, { x: number; y: number }>>({});
+  const dragging = useRef(false);
+  const dragOffset = useRef({ x: 0, y: 0 });
+  const orbRef = useRef<HTMLDivElement>(null);
+
+  // When route changes, use user's saved position for that route or smart default
+  useEffect(() => {
+    const saved = userPosRef.current[location.pathname];
+    setPos(saved ?? getDefaultPos(location.pathname));
+  }, [location.pathname]);
+
+  // Clamp to viewport on resize
+  useEffect(() => {
+    const onResize = () => {
+      setPos((p) => ({
+        x: Math.max(0, Math.min(p.x, window.innerWidth - 110)),
+        y: Math.max(0, Math.min(p.y, window.innerHeight - 110)),
+      }));
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
+  const onMouseDown = useCallback((e: React.MouseEvent) => {
+    if (!orbRef.current) return;
+    e.preventDefault();
+    const rect = orbRef.current.getBoundingClientRect();
+    dragOffset.current = { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    dragging.current = true;
+
+    const onMove = (ev: MouseEvent) => {
+      if (!dragging.current) return;
+      const nx = Math.max(0, Math.min(ev.clientX - dragOffset.current.x, window.innerWidth - 110));
+      const ny = Math.max(0, Math.min(ev.clientY - dragOffset.current.y, window.innerHeight - 110));
+      setPos({ x: nx, y: ny });
+    };
+    const onUp = (ev: MouseEvent) => {
+      dragging.current = false;
+      const nx = Math.max(0, Math.min(ev.clientX - dragOffset.current.x, window.innerWidth - 110));
+      const ny = Math.max(0, Math.min(ev.clientY - dragOffset.current.y, window.innerHeight - 110));
+      // Snap to nearest edge with padding
+      const snapX = nx < window.innerWidth / 2 ? 24 : window.innerWidth - 110;
+      setPos({ x: snapX, y: ny });
+      userPosRef.current[location.pathname] = { x: snapX, y: ny };
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [location.pathname]);
+
+  const statusColor = orbState === 'listening' ? '#00ff88' : orbState === 'speaking' ? '#00d4ff' : streamState.isStreaming ? '#ffcc00' : 'rgba(0,212,255,0.5)';
+  const statusText = orbState === 'listening' ? 'LISTENING' : orbState === 'speaking' ? 'SPEAKING' : streamState.isStreaming ? (streamState.phase?.replace('...', '') || 'GENERATING').toUpperCase() : 'JARVIS';
+
+  // Label appears on left or right depending on which side of the screen we're on
+  const onRightSide = pos.x > window.innerWidth / 2;
+
+  return (
+    <div
+      ref={orbRef}
+      onMouseDown={onMouseDown}
+      style={{
+        position: 'fixed', left: pos.x, top: pos.y, zIndex: 9000,
+        display: 'flex', alignItems: 'center',
+        flexDirection: onRightSide ? 'row-reverse' : 'row',
+        gap: 8, cursor: 'grab',
+        fontFamily: "'IBM Plex Mono', monospace",
+        userSelect: 'none',
+      } as React.CSSProperties}
+    >
+      {/* Orb button */}
+      <div
+        onClick={(e) => {
+          if (dragging.current) return;
+          streamState.isStreaming ? stopStreaming() : (!micDisabled && handleMicClick());
+        }}
+        style={{
+          background: 'rgba(0,6,15,0.88)', border: '1px solid rgba(0,212,255,0.22)',
+          borderRadius: '50%', padding: 5, cursor: 'pointer',
+          boxShadow: orbState !== 'idle' ? '0 0 22px rgba(0,212,255,0.35)' : '0 0 8px rgba(0,0,0,0.6)',
+          transition: 'box-shadow 0.3s',
+          flexShrink: 0,
+        }}
+        title="Drag to move · Click to speak"
+      >
+        <JarvisOrb state={orbState} size={72} />
+      </div>
+
+      {/* Status chip */}
+      <div style={{
+        background: 'rgba(0,6,15,0.82)', border: '1px solid rgba(0,212,255,0.15)',
+        borderRadius: 4, padding: '5px 10px', pointerEvents: 'none',
+        whiteSpace: 'nowrap',
+      }}>
+        <div style={{ fontSize: 8, color: statusColor, letterSpacing: '0.18em', fontWeight: 600 }}>
+          {statusText}
+        </div>
+        {streamState.isStreaming && (
+          <div style={{ fontSize: 7, color: 'rgba(0,212,255,0.35)', letterSpacing: '0.1em', marginTop: 1 }}>
+            {(Math.round(streamState.elapsedMs / 100) / 10).toFixed(1)}s
+          </div>
+        )}
+      </div>
+
+      {/* Timers stacked below, not blocking drag */}
+      {timers.length > 0 && (
+        <div
+          style={{ position: 'absolute', top: '100%', left: 0, marginTop: 6, display: 'flex', flexDirection: 'column', gap: 4 }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          {timers.map((t) => <TimerWidget key={t.id} timer={t} onDismiss={() => dismissTimer(t.id)} />)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Inner app with routing + floating orb ────────────────────────────────────
+
+function AppInner({ commandPaletteOpen, setCommandPaletteOpen, optInModalOpen, setOptInModalOpen }: {
+  commandPaletteOpen: boolean;
+  setCommandPaletteOpen: (v: boolean) => void;
+  optInModalOpen: boolean;
+  setOptInModalOpen: (v: boolean) => void;
+}) {
+  const location = useLocation();
+  const showFloatingOrb = location.pathname !== '/';
+
+  return (
     <>
       <Routes>
+        <Route index element={<JarvisPage />} />
+        <Route path="map" element={<MapPage />} />
+        <Route path="mission-control" element={<MissionControlPage />} />
         <Route element={<Layout />}>
-          <Route index element={<ChatPage />} />
+          <Route path="chat" element={<ChatPage />} />
           <Route path="dashboard" element={<DashboardPage />} />
           <Route path="settings" element={<SettingsPage />} />
           <Route path="get-started" element={<GetStartedPage />} />
@@ -180,11 +354,10 @@ export default function App() {
           <Route path="logs" element={<LogsPage />} />
         </Route>
       </Routes>
+      {showFloatingOrb && <FloatingOrb />}
       <Toaster position="bottom-right" />
       {commandPaletteOpen && <CommandPalette />}
-      {optInModalOpen && (
-        <OptInModal onClose={() => setOptInModalOpen(false)} />
-      )}
+      {optInModalOpen && <OptInModal onClose={() => setOptInModalOpen(false)} />}
     </>
   );
 }

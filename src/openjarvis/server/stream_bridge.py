@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import uuid
 from typing import AsyncGenerator
 
@@ -23,6 +24,21 @@ from openjarvis.server.models import (
     StreamChoice,
     UsageInfo,
 )
+
+_TOOL_XML_RE = re.compile(
+    r"<tool_use>.*?</tool_use>"
+    r"|<tool_result>.*?</tool_result>"
+    r"|<tool_name>[^<]*</tool_name>"
+    r"|<parameters>.*?</parameters>",
+    re.DOTALL,
+)
+
+
+def _clean_content(text: str) -> str:
+    """Strip any XML tool-use tags that leaked into the final response."""
+    cleaned = _TOOL_XML_RE.sub("", text)
+    return " ".join(cleaned.split())  # collapse whitespace
+
 
 # EventTypes we subscribe to and their corresponding SSE event names
 _EVENT_MAP = {
@@ -237,62 +253,38 @@ class AgentStreamBridge:
                     {"results": tool_results_data},
                 )
 
-            # Stream content using real LLM token streaming via
-            # engine.stream_full() when the engine is available.
-            content = agent_result.content or ""
-            engine = getattr(self._agent, "_engine", None)
-            used_real_streaming = False
+            # Emit navigation/UI events for special tools
+            for tr in agent_result.tool_results:
+                if tr.tool_name == "show_map" and tr.success:
+                    try:
+                        map_data = json.loads(tr.content)
+                        if "lat" in map_data and "lng" in map_data:
+                            yield self._format_named_event("show_map", map_data)
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                elif tr.tool_name == "set_timer" and tr.success:
+                    try:
+                        timer_data = json.loads(tr.content)
+                        if "seconds" in timer_data:
+                            yield self._format_named_event("set_timer", timer_data)
+                    except (json.JSONDecodeError, KeyError):
+                        pass
+                elif tr.tool_name == "navigate_to" and tr.success:
+                    try:
+                        nav_data = json.loads(tr.content)
+                        if "path" in nav_data:
+                            yield self._format_named_event("navigate_to", nav_data)
+                    except (json.JSONDecodeError, KeyError):
+                        pass
 
-            if engine is not None and hasattr(engine, "stream_full") and content:
-                # Re-stream using the engine for real token delivery.
-                # Build the same messages the agent used for its final turn.
-                try:
-                    from openjarvis.core.types import Message as MsgType
-                    from openjarvis.core.types import Role as RoleType
+            # Stream the agent's final content word-by-word.
+            # Note: we intentionally do NOT re-call the LLM here. Re-streaming
+            # via engine.stream_full() sends messages without tool results,
+            # causing the model to regenerate and leak <tool_use> XML into
+            # the output while also doubling token usage.
+            content = _clean_content(agent_result.content or "")
 
-                    replay_messages = []
-                    for m in self._request.messages:
-                        role = (
-                            RoleType(m.role)
-                            if m.role in {r.value for r in RoleType}
-                            else RoleType.USER
-                        )
-                        replay_messages.append(
-                            MsgType(
-                                role=role,
-                                content=m.content or "",
-                                name=m.name,
-                                tool_call_id=m.tool_call_id,
-                            )
-                        )
-
-                    async for sc in engine.stream_full(
-                        replay_messages,
-                        model=self._model,
-                    ):
-                        if sc.content:
-                            chunk = ChatCompletionChunk(
-                                id=self._chunk_id,
-                                model=self._model,
-                                choices=[
-                                    StreamChoice(
-                                        delta=DeltaMessage(content=sc.content),
-                                    )
-                                ],
-                            )
-                            yield f"data: {chunk.model_dump_json()}\n\n"
-                    used_real_streaming = True
-                except Exception as stream_exc:
-                    import logging as _logging
-
-                    _logger = _logging.getLogger("openjarvis.server")
-                    _logger.warning(
-                        "Real streaming failed, falling back to word replay: %s",
-                        stream_exc,
-                    )
-
-            # Fallback: word-by-word replay if real streaming was not used
-            if not used_real_streaming and content:
+            if content:
                 words = content.split(" ")
                 for i, word in enumerate(words):
                     token = word if i == 0 else " " + word

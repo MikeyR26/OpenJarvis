@@ -29,7 +29,7 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,ico,png,svg}'],
-        navigateFallbackDenylist: [/^\/v1\//, /^\/health/, /^\/dashboard/],
+        navigateFallbackDenylist: [/^\/v1\//, /^\/health/, /^\/dashboard/, /^\/api\//],
       },
     }),
   ],
@@ -50,9 +50,11 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    strictPort: true,
     proxy: {
       '/v1': process.env.VITE_API_URL || 'http://localhost:8000',
       '/health': process.env.VITE_API_URL || 'http://localhost:8000',
+      '/api': process.env.VITE_API_URL || 'http://localhost:8000',
     },
   },
 });

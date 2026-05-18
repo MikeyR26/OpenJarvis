@@ -73,11 +73,13 @@ interface Settings {
   temperature: number;
   maxTokens: number;
   speechEnabled: boolean;
+  ttsEnabled: boolean;
+  wakeWordEnabled: boolean;
 }
 
 function loadSettings(): Settings {
   const defaults: Settings = {
-    theme: 'system',
+    theme: 'dark',
     apiUrl: '',
     fontSize: 'default',
     defaultModel: '',
@@ -85,6 +87,8 @@ function loadSettings(): Settings {
     temperature: 0.7,
     maxTokens: 4096,
     speechEnabled: false,
+    ttsEnabled: false,
+    wakeWordEnabled: true,
   };
   try {
     const raw = localStorage.getItem(SETTINGS_KEY);

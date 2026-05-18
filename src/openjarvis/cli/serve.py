@@ -181,6 +181,8 @@ def serve(
             if AgentRegistry.contains(agent_key):
                 agent_cls = AgentRegistry.get(agent_key)
                 agent_kwargs = {"bus": bus}
+                if config.agent.system_prompt:
+                    agent_kwargs["system_prompt"] = config.agent.system_prompt
                 if sec.capability_policy is not None:
                     agent_kwargs["capability_policy"] = sec.capability_policy
 

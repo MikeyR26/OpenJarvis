@@ -141,4 +141,69 @@ try:
 except ImportError:
     pass
 
+try:
+    import openjarvis.tools.get_time  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.show_map  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.remember  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.set_timer  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.screen_capture  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.navigate_to  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.system_stats  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.music_control  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.schedule_reminder  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.spotify_tool  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.open_browser_tool  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.calendar_tool  # noqa: F401
+except ImportError:
+    pass
+
+try:
+    import openjarvis.tools.gmail_tool  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]

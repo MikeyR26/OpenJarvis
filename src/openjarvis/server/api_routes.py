@@ -757,12 +757,18 @@ async def transcribe_speech(request: Request):
 
     audio_bytes = await audio_file.read()
     language = form.get("language")
+    initial_prompt = form.get("initial_prompt")
 
     # Detect format from filename
     filename = getattr(audio_file, "filename", "audio.wav")
     ext = filename.rsplit(".", 1)[-1] if "." in filename else "wav"
 
-    result = backend.transcribe(audio_bytes, format=ext, language=language or None)
+    result = backend.transcribe(
+        audio_bytes,
+        format=ext,
+        language=language or None,
+        initial_prompt=initial_prompt or None,
+    )
     return {
         "text": result.text,
         "language": result.language,
@@ -781,6 +787,77 @@ async def speech_health(request: Request):
         "available": backend.health(),
         "backend": backend.backend_id,
     }
+
+
+@speech_router.post("/tts")
+async def text_to_speech(request: Request):
+    """Synthesize text to audio using the configured TTS backend.
+
+    Returns raw audio bytes with appropriate Content-Type.
+    Falls back through: fish_audio → cartesia → openai → kokoro
+    """
+    import os
+
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="'text' field is required")
+
+    voice_id = body.get("voice_id", "")
+    output_format = body.get("format", "mp3")
+
+    # Try TTS backends in priority order
+    from openjarvis.core.registry import TTSRegistry
+    import openjarvis.speech.fish_audio_tts  # noqa: F401 — trigger registration
+    import openjarvis.speech.cartesia_tts    # noqa: F401
+    import openjarvis.speech.openai_tts      # noqa: F401
+    import openjarvis.speech.kokoro_tts      # noqa: F401
+
+    priority = ["fish_audio", "cartesia", "openai", "kokoro"]
+    backend = None
+    for name in priority:
+        if not TTSRegistry.contains(name):
+            continue
+        cls = TTSRegistry.get(name)
+        candidate = cls() if isinstance(cls, type) else cls
+        if candidate.health():
+            backend = candidate
+            break
+
+    if backend is None:
+        raise HTTPException(
+            status_code=501,
+            detail="No TTS backend available. Set FISH_AUDIO_API_KEY, CARTESIA_API_KEY, or OPENAI_API_KEY.",
+        )
+
+    try:
+        result = backend.synthesize(text, voice_id=voice_id, output_format=output_format)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {exc}")
+
+    content_type = "audio/mpeg" if output_format == "mp3" else f"audio/{output_format}"
+    from fastapi.responses import Response
+    return Response(content=result.audio, media_type=content_type)
+
+
+@speech_router.get("/tts/health")
+async def tts_health():
+    """Check which TTS backend is available."""
+    import openjarvis.speech.fish_audio_tts  # noqa: F401
+    import openjarvis.speech.cartesia_tts    # noqa: F401
+    import openjarvis.speech.openai_tts      # noqa: F401
+    import openjarvis.speech.kokoro_tts      # noqa: F401
+    from openjarvis.core.registry import TTSRegistry
+
+    priority = ["fish_audio", "cartesia", "openai", "kokoro"]
+    for name in priority:
+        if not TTSRegistry.contains(name):
+            continue
+        cls = TTSRegistry.get(name)
+        candidate = cls() if isinstance(cls, type) else cls
+        if candidate.health():
+            return {"available": True, "backend": name}
+    return {"available": False}
 
 
 # ---- Feedback routes ----
@@ -881,8 +958,159 @@ async def start_optimize_run(req: OptimizeRunRequest, request: Request):
     return {"status": "started", "run_id": "placeholder"}
 
 
+# ---- Jarvis system routes ----
+
+jarvis_router = APIRouter(prefix="/api", tags=["jarvis"])
+
+
+@jarvis_router.get("/system-stats")
+async def system_stats():
+    """Return live CPU, RAM, disk, and GPU stats."""
+    try:
+        import psutil
+
+        cpu = psutil.cpu_percent(interval=0.1)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage("/")
+        result: Dict[str, Any] = {
+            "cpu_percent": round(cpu, 1),
+            "ram_percent": round(mem.percent, 1),
+            "ram_used_gb": round(mem.used / 1e9, 1),
+            "ram_total_gb": round(mem.total / 1e9, 1),
+            "disk_percent": round(disk.percent, 1),
+        }
+        try:
+            import subprocess as _sp
+            r = _sp.run(
+                ["nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total",
+                 "--format=csv,noheader,nounits"],
+                capture_output=True, text=True, timeout=2,
+            )
+            if r.returncode == 0:
+                parts = r.stdout.strip().split(",")
+                if len(parts) >= 3:
+                    result["gpu_percent"] = float(parts[0].strip())
+                    result["gpu_vram_used_mb"] = float(parts[1].strip())
+                    result["gpu_vram_total_mb"] = float(parts[2].strip())
+        except Exception:
+            pass
+        return result
+    except ImportError:
+        return {"error": "psutil not installed"}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@jarvis_router.get("/weather")
+async def weather():
+    """Return current weather using wttr.in (no API key required)."""
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get("https://wttr.in/:auto?format=j1")
+        if resp.status_code == 200:
+            data = resp.json()
+            cur = data.get("current_condition", [{}])[0]
+            area = data.get("nearest_area", [{}])[0]
+            city = area.get("areaName", [{}])[0].get("value", "Unknown")
+            country = area.get("country", [{}])[0].get("value", "")
+            temp_c = cur.get("temp_C", "?")
+            desc = cur.get("weatherDesc", [{}])[0].get("value", "Unknown")
+            humidity = cur.get("humidity", "?")
+            feels_c = cur.get("FeelsLikeC", "?")
+            return {
+                "city": city,
+                "country": country,
+                "temp_c": int(temp_c) if str(temp_c).lstrip("-").isdigit() else temp_c,
+                "feels_c": int(feels_c) if str(feels_c).lstrip("-").isdigit() else feels_c,
+                "description": desc,
+                "humidity": humidity,
+            }
+        return {"error": f"Weather fetch failed: {resp.status_code}"}
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@jarvis_router.get("/reminders/due")
+async def reminders_due():
+    """Return and clear all reminders that are now due."""
+    try:
+        from openjarvis.tools.schedule_reminder import pop_due_reminders
+        due = pop_due_reminders()
+        return {"reminders": due}
+    except Exception as exc:
+        return {"reminders": [], "error": str(exc)}
+
+
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+
+google_router = APIRouter(prefix="/api/google", tags=["google"])
+
+_GOOGLE_REDIRECT = "http://localhost:8000/api/google/callback"
+
+
+@google_router.get("/auth/url")
+async def google_auth_url():
+    """Return the Google OAuth authorisation URL."""
+    try:
+        from openjarvis.tools.google_oauth import _CREDS_FILE, get_auth_url
+
+        if not _CREDS_FILE.exists():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "google_credentials.json not found. Download an OAuth 2.0 Desktop "
+                    "credentials file from Google Cloud Console and save it as "
+                    "~/.openjarvis/google_credentials.json"
+                ),
+            )
+        url, state = get_auth_url(_GOOGLE_REDIRECT)
+        return {"url": url, "state": state}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@google_router.get("/callback")
+async def google_callback(code: str, state: str):
+    """Handle the OAuth redirect — exchange code for token then close the tab."""
+    from fastapi.responses import HTMLResponse
+
+    try:
+        from openjarvis.tools.google_oauth import exchange_code
+
+        exchange_code(code, state, _GOOGLE_REDIRECT)
+        html = (
+            "<html><body style='font-family:monospace;background:#00060f;color:#00d4ff;"
+            "display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+            "<h2>Google account connected. You can close this tab.</h2></body></html>"
+        )
+        return HTMLResponse(html)
+    except Exception as exc:
+        html = (
+            f"<html><body style='font-family:monospace;background:#00060f;color:#ff4444;"
+            f"display:flex;align-items:center;justify-content:center;height:100vh;margin:0'>"
+            f"<h2>Auth failed: {exc}</h2></body></html>"
+        )
+        return HTMLResponse(html, status_code=400)
+
+
+@google_router.get("/status")
+async def google_status():
+    """Return whether Google account is connected."""
+    try:
+        from openjarvis.tools.google_oauth import is_connected
+
+        return {"connected": is_connected()}
+    except Exception:
+        return {"connected": False}
+
+
 def include_all_routes(app) -> None:
     """Include all extended API routers in a FastAPI app."""
+    app.include_router(jarvis_router)
+    app.include_router(google_router)
     app.include_router(agents_router)
     app.include_router(memory_router)
     app.include_router(traces_router)
