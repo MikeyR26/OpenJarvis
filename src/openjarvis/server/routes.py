@@ -111,7 +111,8 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                 exc_info=True,
             )
 
-    # Inject current local date/time so Jarvis never guesses the date
+    # Inject current local date/time just before the last user message so it
+    # overrides any stale dates in the conversation history.
     try:
         from datetime import datetime as _dt
         _now = _dt.now().astimezone()
@@ -121,10 +122,17 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
             f"— ISO date: {_now.strftime('%Y-%m-%d')}]"
         )
         from openjarvis.server.models import ChatMessage as _CM
-        request_body.messages = [
-            _CM(role="system", content=_date_content),
-            *request_body.messages,
-        ]
+        if len(request_body.messages) > 1:
+            request_body.messages = [
+                *request_body.messages[:-1],
+                _CM(role="system", content=_date_content),
+                request_body.messages[-1],
+            ]
+        else:
+            request_body.messages = [
+                _CM(role="system", content=_date_content),
+                *request_body.messages,
+            ]
     except Exception:
         pass
 
