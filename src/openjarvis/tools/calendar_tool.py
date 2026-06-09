@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from openjarvis.core.registry import ToolRegistry
 from openjarvis.core.types import ToolResult
 from openjarvis.tools._stubs import BaseTool, ToolSpec
+
+_log = logging.getLogger("openjarvis.tools.calendar")
 
 
 @ToolRegistry.register("google_calendar")
@@ -63,6 +66,7 @@ class GoogleCalendarTool(BaseTool):
         )
 
     def execute(self, **params: Any) -> ToolResult:
+        _log.info("google_calendar called with params: %s", params)
         try:
             from googleapiclient.discovery import build
 
@@ -79,17 +83,26 @@ class GoogleCalendarTool(BaseTool):
 
         try:
             creds = get_credentials()
+            _log.info("credentials valid=%s expired=%s", creds.valid, creds.expired)
         except RuntimeError as exc:
+            _log.error("get_credentials failed: %s", exc)
             return ToolResult(tool_name="google_calendar", content=str(exc), success=False)
 
         service = build("calendar", "v3", credentials=creds)
+        # Show which Google account is connected
+        cal_info = service.calendars().get(calendarId="primary").execute()
+        account_email = cal_info.get("id", "unknown")
+        _log.info("calendar account: %s", account_email)
         action = params.get("action", "list")
 
         if action == "list":
-            days = int(params.get("days") or 7)
-            now = datetime.now(timezone.utc)
-            time_min = now.isoformat()
-            time_max = (now + timedelta(days=days)).isoformat()
+            days = max(1, int(params.get("days") or 7))
+            # Use local time so "today" and "tomorrow" match the user's clock
+            local_now = datetime.now().astimezone()
+            today_start = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+            time_min = today_start.isoformat()
+            # End of the last day (23:59:59) so evening events aren't cut off
+            time_max = (today_start + timedelta(days=days, hours=23, minutes=59, seconds=59)).isoformat()
 
             try:
                 result = (
@@ -113,11 +126,11 @@ class GoogleCalendarTool(BaseTool):
             if not items:
                 return ToolResult(
                     tool_name="google_calendar",
-                    content=f"Nothing on the calendar for the next {days} days.",
+                    content=f"Nothing on the calendar for the next {days} days. (Connected account: {account_email})",
                     success=True,
                 )
 
-            lines = []
+            lines = [f"Connected account: {account_email}"]
             for ev in items:
                 start = ev["start"].get("dateTime", ev["start"].get("date", ""))
                 lines.append(f"- {start}: {ev.get('summary', 'Untitled')}")
@@ -134,11 +147,21 @@ class GoogleCalendarTool(BaseTool):
                 )
 
             end_str = (params.get("end") or "").strip()
-            if not end_str:
-                try:
-                    start_dt = datetime.fromisoformat(start_str)
-                    end_str = (start_dt + timedelta(hours=1)).isoformat()
-                except ValueError:
+            try:
+                start_dt = datetime.fromisoformat(start_str)
+                if start_dt.tzinfo is None:
+                    start_dt = start_dt.astimezone()
+                if not end_str:
+                    end_dt = start_dt + timedelta(hours=1)
+                else:
+                    end_dt = datetime.fromisoformat(end_str)
+                    if end_dt.tzinfo is None:
+                        end_dt = end_dt.astimezone()
+                # isoformat() includes the UTC offset e.g. 2026-05-19T20:00:00-07:00
+                start_str = start_dt.isoformat()
+                end_str = end_dt.isoformat()
+            except ValueError:
+                if not end_str:
                     end_str = start_str
 
             event_body: dict = {
@@ -149,11 +172,14 @@ class GoogleCalendarTool(BaseTool):
             if params.get("description"):
                 event_body["description"] = params["description"]
 
+            _log.info("inserting event: %s", event_body)
             try:
                 created = (
                     service.events().insert(calendarId="primary", body=event_body).execute()
                 )
+                _log.info("created event id=%s htmlLink=%s", created.get("id"), created.get("htmlLink"))
             except Exception as exc:
+                _log.error("event insert failed: %s", exc)
                 return ToolResult(
                     tool_name="google_calendar",
                     content=f"Failed to create event: {exc}",
@@ -161,9 +187,12 @@ class GoogleCalendarTool(BaseTool):
                 )
 
             start_display = created["start"].get("dateTime", created["start"].get("date"))
+            organizer = created.get("organizer", {}).get("email", "unknown")
+            link = created.get("htmlLink", "")
+            _log.info("event created successfully: %s on %s for %s", title, start_display, organizer)
             return ToolResult(
                 tool_name="google_calendar",
-                content=f"Done. '{created.get('summary')}' added to your calendar for {start_display}.",
+                content=f"Done. '{created.get('summary')}' added for {start_display}. Account: {organizer}. Link: {link}",
                 success=True,
             )
 

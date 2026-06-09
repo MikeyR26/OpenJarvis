@@ -206,4 +206,9 @@ try:
 except ImportError:
     pass
 
+try:
+    import openjarvis.tools.google_connect_tool  # noqa: F401
+except ImportError:
+    pass
+
 __all__ = ["BaseTool", "ToolExecutor", "ToolSpec"]

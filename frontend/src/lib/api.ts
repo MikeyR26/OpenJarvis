@@ -276,7 +276,7 @@ export async function transcribeAudio(audioBlob: Blob, filename = 'recording.web
 export async function transcribeWakeWord(audioBlob: Blob): Promise<TranscriptionResult> {
   const formData = new FormData();
   formData.append('file', audioBlob, 'wake.webm');
-  formData.append('initial_prompt', 'Jarvis, Hey Jarvis');
+  formData.append('initial_prompt', 'Jarvis');
   const res = await fetch(`${getBase()}/v1/speech/transcribe`, {
     method: 'POST',
     body: formData,

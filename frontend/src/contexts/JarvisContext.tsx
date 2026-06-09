@@ -343,20 +343,33 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
   const wakeWordSuppressed = speechState === 'recording' || orbState === 'speaking' || orbState === 'listening';
   const { supported: wakeWordSupported } = useWakeWord(wakeWordEnabled && !isMissionControl, handleWake, wakeWordSuppressed);
 
+  // Strip markdown symbols so TTS doesn't read "asterisk" or "pound sign"
+  const stripMarkdown = (text: string) =>
+    text
+      .replace(/\*\*(.+?)\*\*/gs, '$1')
+      .replace(/\*(.+?)\*/gs, '$1')
+      .replace(/^#{1,6}\s+/gm, '')
+      .replace(/`{1,3}[\s\S]*?`{1,3}/g, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/^\s*[-*+]\s+/gm, '')
+      .replace(/^\s*\d+\.\s+/gm, '')
+      .trim();
+
   // Queue a sentence for TTS synthesis + playback
   const enqueueTTS = useCallback((text: string) => {
     ttsQueueRef.current = ttsQueueRef.current.then(async () => {
-      if (ttsAbortRef.current || !text.trim()) return;
+      const clean = stripMarkdown(text);
+      if (ttsAbortRef.current || !clean) return;
       try {
-        const blob = await synthesizeSpeech(text.trim());
+        const blob = await synthesizeSpeech(clean);
         await playAudioBlob(blob, ttsAbortRef);
       } catch {
         // Fish Audio failed — fall back to browser speech synthesis
         if (!ttsAbortRef.current && 'speechSynthesis' in window) {
           await new Promise<void>((resolve) => {
             window.speechSynthesis.cancel();
-            const u = new SpeechSynthesisUtterance(text.trim());
-            u.rate = 0.9; u.pitch = 0.85;
+            const u = new SpeechSynthesisUtterance(clean);
+            u.rate = 1.15; u.pitch = 0.85;
             u.onend = () => resolve();
             u.onerror = () => resolve();
             window.speechSynthesis.speak(u);
@@ -562,6 +575,7 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
       abortRef.current = null;
 
       const shouldSpeak = ttsEnabled && !wasAborted && accumulatedContent && accumulatedContent !== 'No response was generated. Please try again.';
+      const endsWithQuestion = accumulatedContent.trimEnd().endsWith('?');
 
       if (shouldSpeak) {
         // Flush any remaining text that didn't end in a sentence boundary
@@ -571,10 +585,10 @@ export function JarvisProvider({ children }: { children: ReactNode }) {
           ttsUnspokenRef.current = '';
         }
 
-        // After TTS drains, always listen briefly in case the user replies
+        // After TTS drains, auto-listen only if Jarvis asked a question
         ttsQueueRef.current.then(() => {
           if (ttsAbortRef.current) return;
-          if (speechAvailable) {
+          if (endsWithQuestion && speechAvailable) {
             setTimeout(() => vadRecordAndSendRef.current?.(), 400);
           } else {
             setOrbState('idle');

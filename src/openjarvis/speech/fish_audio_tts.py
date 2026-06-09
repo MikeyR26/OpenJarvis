@@ -33,6 +33,7 @@ def _fish_synthesize(
         "text": text,
         "format": output_format,
         "streaming": streaming,
+        "speed": 1.25,
     }
     if reference_id:
         body["reference_id"] = reference_id

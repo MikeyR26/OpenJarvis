@@ -7,6 +7,7 @@ from pathlib import Path
 _CREDS_FILE = Path.home() / ".openjarvis" / "google_credentials.json"
 _TOKEN_FILE = Path.home() / ".openjarvis" / "google_token.json"
 _STATE_FILE = Path.home() / ".openjarvis" / ".google_oauth_state"
+_VERIFIER_FILE = Path.home() / ".openjarvis" / ".google_oauth_verifier"
 
 SCOPES = [
     "https://www.googleapis.com/auth/calendar",
@@ -68,6 +69,16 @@ def get_auth_url(redirect_uri: str = _REDIRECT_URI) -> tuple[str, str]:
     )
     _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
     _STATE_FILE.write_text(state, encoding="utf-8")
+
+    # Persist PKCE code verifier so exchange_code can use it
+    verifier = getattr(flow, "code_verifier", None) or getattr(
+        getattr(flow, "oauth2session", None), "code_verifier", None
+    )
+    if verifier:
+        _VERIFIER_FILE.write_text(verifier, encoding="utf-8")
+    elif _VERIFIER_FILE.exists():
+        _VERIFIER_FILE.unlink()
+
     return url, state
 
 
@@ -85,6 +96,11 @@ def exchange_code(code: str, state: str, redirect_uri: str = _REDIRECT_URI) -> N
         redirect_uri=redirect_uri,
         state=state,
     )
+    # Restore PKCE code verifier if it was saved during get_auth_url
+    if _VERIFIER_FILE.exists():
+        flow.code_verifier = _VERIFIER_FILE.read_text(encoding="utf-8").strip()
+        _VERIFIER_FILE.unlink()
+
     flow.fetch_token(code=code)
     _save_token(flow.credentials)
     if _STATE_FILE.exists():

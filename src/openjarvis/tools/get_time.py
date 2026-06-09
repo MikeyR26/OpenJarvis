@@ -82,7 +82,7 @@ class GetTimeTool(BaseTool):
         )
 
     def execute(self, **params: Any) -> ToolResult:
-        location = params.get("location", "UTC").strip()
+        location = params.get("location", "local").strip()
 
         try:
             from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -91,6 +91,19 @@ class GetTimeTool(BaseTool):
                 tool_name="get_time",
                 content="zoneinfo not available — requires Python 3.9+",
                 success=False,
+            )
+
+        # "local" → use the machine's local timezone
+        if location.lower() in ("local", "here", "my time", ""):
+            now = datetime.now().astimezone()
+            time_str = now.strftime("%I:%M %p").lstrip("0")
+            date_str = now.strftime("%A, %B %d, %Y")
+            iso_date = now.strftime("%Y-%m-%d")
+            tz_name = now.strftime("%Z")
+            return ToolResult(
+                tool_name="get_time",
+                content=f"{time_str} on {date_str} (local/{tz_name}) — ISO date: {iso_date}",
+                success=True,
             )
 
         # Resolve city name → IANA timezone
@@ -111,11 +124,12 @@ class GetTimeTool(BaseTool):
             )
 
         now = datetime.now(tz=tz)
-        time_str = now.strftime("%I:%M %p").lstrip("0")  # e.g. "11:24 AM"
-        date_str = now.strftime("%A, %B %d")             # e.g. "Friday, May 8"
+        time_str = now.strftime("%I:%M %p").lstrip("0")
+        date_str = now.strftime("%A, %B %d, %Y")
+        iso_date = now.strftime("%Y-%m-%d")
 
         return ToolResult(
             tool_name="get_time",
-            content=f"{time_str} on {date_str} ({iana})",
+            content=f"{time_str} on {date_str} ({iana}) — ISO date: {iso_date}",
             success=True,
         )

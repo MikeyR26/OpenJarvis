@@ -5,7 +5,7 @@ import { transcribeWakeWord } from '../lib/api';
 const WAKE_WORDS = ['jarvis', 'hey jarvis', 'jarves', 'hey jarves', 'jar vis'];
 
 // VAD thresholds
-const SPEECH_THRESHOLD = 28;   // RMS level (0–255) — high enough to ignore background noise
+const SPEECH_THRESHOLD = 30;   // RMS level (0–255) — balanced for voice pickup without TV bleed
 const SILENCE_MS = 1200;       // stop recording after this much consecutive silence
 const MAX_RECORDING_MS = 7000; // hard cap on one recording chunk
 const MIN_SPEECH_MS = 600;     // don't bother transcribing very short blips
@@ -107,10 +107,12 @@ export function useWakeWord(
       const text = (result.text || '').toLowerCase().trim();
       console.log('[WakeWord] heard:', JSON.stringify(text));
 
-      // ── Check for wake word ────────────────────────────────────────────
+      // ── Check for wake word — must appear within first 3 words ───────────
+      const words = text.trim().split(/\s+/);
+      const firstThree = words.slice(0, 3).join(' ');
       for (const w of WAKE_WORDS) {
-        const idx = text.indexOf(w);
-        if (idx !== -1) {
+        if (firstThree.includes(w)) {
+          const idx = text.indexOf(w);
           const afterWake = text.slice(idx + w.length).trim();
           console.log('[WakeWord] WAKE — command:', JSON.stringify(afterWake));
           onWakeRef.current(afterWake);

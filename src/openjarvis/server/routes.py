@@ -111,6 +111,23 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                 exc_info=True,
             )
 
+    # Inject current local date/time so Jarvis never guesses the date
+    try:
+        from datetime import datetime as _dt
+        _now = _dt.now().astimezone()
+        _date_content = (
+            f"[Current date/time: {_now.strftime('%A, %B %d, %Y')} "
+            f"{_now.strftime('%I:%M %p')} {_now.strftime('%Z')} "
+            f"— ISO date: {_now.strftime('%Y-%m-%d')}]"
+        )
+        from openjarvis.server.models import ChatMessage as _CM
+        request_body.messages = [
+            _CM(role="system", content=_date_content),
+            *request_body.messages,
+        ]
+    except Exception:
+        pass
+
     # Inject personality memories from remember tool (memories.json)
     try:
         import json as _json
