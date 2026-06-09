@@ -111,28 +111,26 @@ async def chat_completions(request_body: ChatCompletionRequest, request: Request
                 exc_info=True,
             )
 
-    # Inject current local date/time just before the last user message so it
-    # overrides any stale dates in the conversation history.
+    # Inject current date directly into the last user message so it
+    # cannot be overridden by stale dates in the conversation history.
     try:
         from datetime import datetime as _dt
         _now = _dt.now().astimezone()
-        _date_content = (
-            f"[Current date/time: {_now.strftime('%A, %B %d, %Y')} "
-            f"{_now.strftime('%I:%M %p')} {_now.strftime('%Z')} "
-            f"— ISO date: {_now.strftime('%Y-%m-%d')}]"
+        _date_prefix = (
+            f"[Today: {_now.strftime('%A, %B %d, %Y')} — "
+            f"ISO: {_now.strftime('%Y-%m-%d')} — "
+            f"Time: {_now.strftime('%I:%M %p')} {_now.strftime('%Z')}] "
         )
-        from openjarvis.server.models import ChatMessage as _CM
-        if len(request_body.messages) > 1:
-            request_body.messages = [
-                *request_body.messages[:-1],
-                _CM(role="system", content=_date_content),
-                request_body.messages[-1],
-            ]
-        else:
-            request_body.messages = [
-                _CM(role="system", content=_date_content),
-                *request_body.messages,
-            ]
+        if request_body.messages:
+            _last = request_body.messages[-1]
+            if isinstance(_last.content, str):
+                _last.content = _date_prefix + _last.content
+            elif isinstance(_last.content, list):
+                # Multimodal: prepend to first text block
+                for _block in _last.content:
+                    if isinstance(_block, dict) and _block.get("type") == "text":
+                        _block["text"] = _date_prefix + _block.get("text", "")
+                        break
     except Exception:
         pass
 

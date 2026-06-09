@@ -833,6 +833,7 @@ async def text_to_speech(request: Request):
     try:
         result = backend.synthesize(text, voice_id=voice_id, output_format=output_format)
     except Exception as exc:
+        logger.error("TTS synthesis failed (backend=%s): %s", getattr(backend, 'backend_id', '?'), exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"TTS synthesis failed: {exc}")
 
     content_type = "audio/mpeg" if output_format == "mp3" else f"audio/{output_format}"
