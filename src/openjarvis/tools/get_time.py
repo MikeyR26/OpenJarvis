@@ -96,13 +96,18 @@ class GetTimeTool(BaseTool):
         # "local" → use the machine's local timezone
         if location.lower() in ("local", "here", "my time", ""):
             now = datetime.now().astimezone()
+            tomorrow = now + timedelta(days=1)
             time_str = now.strftime("%I:%M %p").lstrip("0")
             date_str = now.strftime("%A, %B %d, %Y")
-            iso_date = now.strftime("%Y-%m-%d")
+            iso_today = now.strftime("%Y-%m-%d")
+            iso_tomorrow = tomorrow.strftime("%Y-%m-%d")
             tz_name = now.strftime("%Z")
             return ToolResult(
                 tool_name="get_time",
-                content=f"{time_str} on {date_str} (local/{tz_name}) — ISO date: {iso_date}",
+                content=(
+                    f"{time_str} on {date_str} (local/{tz_name}) — "
+                    f"ISO today: {iso_today} — ISO tomorrow: {iso_tomorrow}"
+                ),
                 success=True,
             )
 
